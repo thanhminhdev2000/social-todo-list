@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -31,6 +32,34 @@ type TodoItemCreation struct {
 
 func (TodoItemCreation) TableName() string { return TodoItem{}.TableName() }
 
+type TodoItemUpdate struct {
+	Title       *string `json:"title" gorm:"column:title;"`
+	Description *string `json:"description" gorm:"column:description;"`
+	Status      *string `json:"status" gorm:"column:status;"`
+}
+
+func (TodoItemUpdate) TableName() string { return TodoItem{}.TableName() }
+
+type Paging struct {
+	Page  int   `json:"page" form:"page"`
+	Limit int   `json:"limit" form:"limit"`
+	Total int64 `json:"total" form:"-"`
+}
+
+func (p *Paging) Process() {
+	if p.Page < 1 {
+		p.Page = 1
+	}
+
+	if p.Limit <= 1 {
+		p.Limit = 1
+	}
+
+	if p.Limit >= 100 {
+		p.Limit = 100
+	}
+}
+
 func main() {
 	godotenv.Load()
 
@@ -52,10 +81,10 @@ func main() {
 		items := v1.Group("/items")
 		{
 			items.POST("", CreateItem(db))
-			items.GET("")
-			items.GET("/:id")
-			items.PUT("/:id")
-			items.DELETE("/:id")
+			items.GET("", ListItem(db))
+			items.GET("/:id", GetItem(db))
+			items.PATCH("/:id", UpdateItem(db))
+			items.DELETE("/:id", DeleteItem(db))
 		}
 	}
 
@@ -70,7 +99,7 @@ func main() {
 func CreateItem(db *gorm.DB) func(ctx *gin.Context) {
 	return func(c *gin.Context) {
 		var itemData TodoItemCreation
-		log.Println("itemData--------", itemData)
+
 		if err := c.ShouldBind(&itemData); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error": err.Error(),
@@ -89,6 +118,141 @@ func CreateItem(db *gorm.DB) func(ctx *gin.Context) {
 
 		c.JSON(http.StatusOK, gin.H{
 			"data": itemData.Id,
+		})
+	}
+}
+
+func GetItem(db *gorm.DB) func(ctx *gin.Context) {
+	return func(c *gin.Context) {
+		var itemData TodoItem
+
+		id, err := strconv.Atoi(c.Param("id"))
+
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": err.Error(),
+			})
+
+			return
+		}
+
+		if err := db.Where("id = ?", id).First(&itemData).Error; err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": err.Error(),
+			})
+
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"data": itemData,
+		})
+	}
+}
+
+func UpdateItem(db *gorm.DB) func(ctx *gin.Context) {
+	return func(c *gin.Context) {
+		id, err := strconv.Atoi(c.Param("id"))
+
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": err.Error(),
+			})
+
+			return
+		}
+
+		var updateDate TodoItemUpdate
+
+		if err := c.ShouldBind(&updateDate); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": err.Error(),
+			})
+
+			return
+		}
+
+		if err := db.Where("id = ?", id).Updates(&updateDate).Error; err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": err.Error(),
+			})
+
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"data": true,
+		})
+	}
+}
+
+func DeleteItem(db *gorm.DB) func(ctx *gin.Context) {
+	return func(c *gin.Context) {
+		id, err := strconv.Atoi(c.Param("id"))
+
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": err.Error(),
+			})
+
+			return
+		}
+
+		deleteStatus := "Deleted"
+
+		if err := db.Where("id = ?", id).Updates(&TodoItemUpdate{Status: &deleteStatus}).Error; err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": err.Error(),
+			})
+
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"data": true,
+		})
+	}
+}
+
+func ListItem(db *gorm.DB) func(ctx *gin.Context) {
+	return func(c *gin.Context) {
+		var paging Paging
+
+		if err := c.ShouldBind(&paging); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": err.Error(),
+			})
+
+			return
+		}
+
+		paging.Process()
+
+		var result []TodoItem
+
+		db = db.Table(TodoItem{}.TableName()).Where("status <> ?", "Deleted")
+
+		if err := db.Select("id").Count(&paging.Total).Error; err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": err.Error(),
+			})
+
+			return
+		}
+
+		if err := db.Offset((paging.Page - 1) * paging.Limit).
+			Limit(paging.Limit).Order("id desc").
+			Find(&result).Error; err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": err.Error(),
+			})
+
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"data":   result,
+			"paging": paging,
 		})
 	}
 }
